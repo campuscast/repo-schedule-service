@@ -1,12 +1,17 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { CorrelationIdInterceptor, LoggingInterceptor, AllExceptionsFilter } from '@campuscast/shared-libs';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
-  app.enableCors({ origin: process.env.CORS_ORIGIN || '*', credentials: true });
+  app.useGlobalInterceptors(new CorrelationIdInterceptor(), new LoggingInterceptor());
+  app.useGlobalFilters(new AllExceptionsFilter());
+
+  const origins = (process.env.CORS_ORIGIN || 'http://localhost:3000').split(',').map(o => o.trim());
+  app.enableCors({ origin: origins, credentials: true });
 
   const port = process.env.PORT || 3005;
   await app.listen(port);

@@ -86,8 +86,10 @@ export class LockingStrategy implements SyncStrategy {
 
     // Replace all slots atomically
     await this.slotRepo.delete({ schedule_id: scheduleId });
-    const entities = slots.map(s => this.slotRepo.create({ ...s, schedule_id: scheduleId }));
-    await this.slotRepo.save(entities);
+    for (const s of slots) {
+      const entity = this.slotRepo.create({ ...s, schedule_id: scheduleId });
+      await this.slotRepo.save(entity);
+    }
   }
 
   async ingestOps(_scheduleId: string, _ops: any[]): Promise<IngestResult> {
