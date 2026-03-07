@@ -23,6 +23,12 @@ export class OpLogEntry {
   @Column()
   client_id: string;
 
+  @Column({ nullable: true })
+  user_id: string;
+
+  @Column({ nullable: true })
+  device_id: string;
+
   @Column('bigint')
   lamport_ts: number;
 

@@ -18,6 +18,7 @@ export class ScheduleService {
   private readonly validationQaUrl = process.env.VALIDATION_QA_URL || 'http://localhost:3007';
   private readonly syncServiceUrl = process.env.SYNC_SERVICE_URL || 'http://localhost:3006';
   private readonly deviceServiceUrl = process.env.DEVICE_SERVICE_URL || 'http://localhost:3003';
+  private readonly internalServiceToken = process.env.INTERNAL_SERVICE_TOKEN || '';
 
   constructor(
     @InjectRepository(Schedule) private readonly scheduleRepo: Repository<Schedule>,
@@ -276,6 +277,21 @@ export class ScheduleService {
       detail: { target_group_ids: targetGroupIds },
     });
 
+    this.auditClient.append({
+      event_type: 'schedule.published',
+      actor_type: 'system',
+      actor_id: 'schedule-service',
+      zone_id: schedule.zone_id,
+      resource_type: 'release',
+      resource_id: releaseId,
+      action: 'published',
+      detail: {
+        schedule_id: scheduleId,
+        version_number: versionNumber,
+        target_group_ids: targetGroupIds,
+      },
+    });
+
     this.logger.log(`Published: schedule=${scheduleId} release=${releaseId} version=${versionNumber}`);
     return { release_id: releaseId, validation_passed: true, issues: qaResult.issues };
   }
@@ -303,6 +319,9 @@ export class ScheduleService {
 
   async getLatestReleaseForDevice(deviceId: string): Promise<ScheduleRelease> {
     const deviceRes = await fetch(`${this.deviceServiceUrl}/devices/${encodeURIComponent(deviceId)}`, {
+      headers: {
+        ...(this.internalServiceToken ? { 'x-internal-token': this.internalServiceToken } : {}),
+      },
       signal: AbortSignal.timeout(5000),
     });
     if (!deviceRes.ok) throw new NotFoundException('Device not found');

@@ -18,6 +18,12 @@ export class ScheduleRelease {
   @Column({ nullable: true })
   manifest_url: string;
 
+  @Column('jsonb', { nullable: true })
+  manifest_json: any;
+
+  @Column({ nullable: true })
+  manifest_hash: string;
+
   @Column({ nullable: true })
   manifest_signature: string;
 

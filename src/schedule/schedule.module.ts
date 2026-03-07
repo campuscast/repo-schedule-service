@@ -7,6 +7,7 @@ import { ScheduleRelease } from '../releases/schedule-release.entity';
 import { OpLogEntry } from '../strategy/crdt/op-log.entity';
 import { ScheduleSnapshot } from '../strategy/crdt/snapshot.entity';
 import { ScheduleController } from './schedule.controller';
+import { ReleasesController } from '../releases/releases.controller';
 import { ScheduleService } from './schedule.service';
 import { SyncStrategyRouter } from '../strategy/strategy-router.service';
 import { LockingStrategy } from '../strategy/locking/locking.strategy';
@@ -26,7 +27,7 @@ import { ManifestBuilder } from '../manifest/manifest-builder.service';
       ScheduleSnapshot,
     ]),
   ],
-  controllers: [ScheduleController],
+  controllers: [ScheduleController, ReleasesController],
   providers: [
     ScheduleService,
     SyncStrategyRouter,

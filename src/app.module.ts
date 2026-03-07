@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { MetricsModule } from '@campuscast/shared-libs';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from './schedule/schedule.module';
@@ -25,6 +26,7 @@ import { appConfig, dbConfig, redisConfig, validate } from './config';
       synchronize: process.env.NODE_ENV === 'development',
     }),
     ScheduleModule,
+      MetricsModule,
   ],
   controllers: [HealthController],
 })

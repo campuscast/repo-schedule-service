@@ -60,6 +60,8 @@ export class CRDTStrategy implements SyncStrategy {
           operation_id: op.causal?.operation_id,
           op_type: op.op_type,
           client_id: op.causal?.client_id,
+          user_id: op.actor?.user_id || op.causal?.user_id,
+          device_id: op.actor?.device_id || op.causal?.device_id,
           lamport_ts: op.causal?.lamport_ts || Date.now(),
           vector_clock: op.causal?.vector_clock || {},
           parent_op_id: op.causal?.parent_op_id,
@@ -165,14 +167,16 @@ export class CRDTStrategy implements SyncStrategy {
       }
     }
 
-    // Replay ops after snapshot
+    // Replay ops after snapshot, sorted by lamport_ts then operation_id for determinism
     const ops = await this.opLogRepo.find({
       where: { schedule_id: scheduleId, is_tombstone: false },
-      order: { lamport_ts: 'ASC' },
+      order: { lamport_ts: 'ASC', operation_id: 'ASC' },
     });
 
     const afterEpoch = snapshot?.epoch || 0;
-    for (const op of ops.filter(o => o.epoch >= afterEpoch)) {
+    // Filter ops that belong to current or later epoch (vector_clock aware ordering)
+    const relevant = ops.filter(o => o.epoch >= afterEpoch);
+    for (const op of relevant) {
       switch (op.op_type) {
         case 'add_slot':
           state.set(op.slot_data.slot_id, op.slot_data);

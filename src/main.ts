@@ -1,7 +1,9 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
-import { CorrelationIdInterceptor, LoggingInterceptor, AllExceptionsFilter } from '@campuscast/shared-libs';
+import { CorrelationIdInterceptor, LoggingInterceptor, AllExceptionsFilter, initTracing } from '@campuscast/shared-libs';
+
+initTracing('schedule-service');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);

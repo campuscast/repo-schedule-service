@@ -24,42 +24,41 @@ export class ScheduleController {
   @Post(':scheduleId/lock')
   async acquireLock(
     @Param('scheduleId') id: string,
-    @Body() body: { user_id: string; ttl_seconds?: number; crdt_enabled?: boolean },
+    @Body() body: { user_id: string; ttl_seconds?: number },
   ) {
-    return this.svc.acquireLock(id, body.user_id, body.ttl_seconds ?? 300, body.crdt_enabled ?? false);
+    return this.svc.acquireLock(id, body.user_id, body.ttl_seconds ?? 300);
   }
 
   @Delete(':scheduleId/lock')
   async releaseLock(
     @Param('scheduleId') id: string,
-    @Body() body: { lock_token: string; crdt_enabled?: boolean },
+    @Body() body: { lock_token: string },
   ) {
-    const released = await this.svc.releaseLock(id, body.lock_token, body.crdt_enabled ?? false);
+    const released = await this.svc.releaseLock(id, body.lock_token);
     return { released };
   }
 
   @Post(':scheduleId/save')
   async saveDraft(
     @Param('scheduleId') id: string,
-    @Body() body: { slots: any[]; lock_token: string; crdt_enabled?: boolean },
+    @Body() body: { slots: any[]; lock_token: string },
   ) {
-    return this.svc.saveDraft(id, body.slots, body.lock_token, body.crdt_enabled ?? false);
+    return this.svc.saveDraft(id, body.slots, body.lock_token);
   }
 
   @Post(':scheduleId/ops')
   async ingestOps(
     @Param('scheduleId') id: string,
-    @Body() body: { ops: any[]; crdt_enabled?: boolean },
+    @Body() body: { ops: any[] },
   ) {
-    return this.svc.ingestOps(id, body.ops, body.crdt_enabled ?? true);
+    return this.svc.ingestOps(id, body.ops);
   }
 
   @Get(':scheduleId/snapshot')
   async getSnapshot(
     @Param('scheduleId') id: string,
-    @Query('crdt_enabled') crdtEnabled = 'false',
   ) {
-    return this.svc.getSnapshot(id, crdtEnabled === 'true');
+    return this.svc.getSnapshot(id);
   }
 
   @Post(':scheduleId/version')
@@ -76,5 +75,10 @@ export class ScheduleController {
     @Body() body: { version_number: number; target_group_ids?: string[] },
   ) {
     return this.svc.publish(id, body.version_number, body.target_group_ids ?? []);
+  }
+
+  @Post(':scheduleId/validate')
+  async validate(@Param('scheduleId') id: string) {
+    return this.svc.validate(id);
   }
 }

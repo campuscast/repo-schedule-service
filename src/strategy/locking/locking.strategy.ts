@@ -1,9 +1,10 @@
-import { Injectable, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, ConflictException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SyncStrategy, LockResult, IngestResult } from '../strategy.interface';
 import { Schedule } from '../../schedule/schedule.entity';
 import { ScheduleSlot } from '../../schedule/schedule-slot.entity';
+import { InvariantValidator } from '../../invariants/invariant-validator.service';
 import Redis from 'ioredis';
 import { randomUUID } from 'crypto';
 
@@ -19,6 +20,7 @@ export class LockingStrategy implements SyncStrategy {
   constructor(
     @InjectRepository(Schedule) private scheduleRepo: Repository<Schedule>,
     @InjectRepository(ScheduleSlot) private slotRepo: Repository<ScheduleSlot>,
+    private readonly invariantValidator: InvariantValidator,
   ) {
     this.redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
   }
@@ -82,6 +84,16 @@ export class LockingStrategy implements SyncStrategy {
       if (!existing) throw new ConflictException('No active lock');
       const parsed = JSON.parse(existing);
       if (parsed.lockToken !== lockToken) throw new ConflictException('Lock token mismatch');
+    }
+
+    // Validate invariants before persisting
+    const violations = this.invariantValidator.validate(slots);
+    if (violations.some(v => v.severity === 'error')) {
+      throw new BadRequestException({
+        code: 'INVARIANT_VIOLATION',
+        message: 'Slots violate schedule invariants',
+        violations,
+      });
     }
 
     // Replace all slots atomically
