@@ -15,11 +15,11 @@ export class ScheduleSnapshot {
   @Column('jsonb')
   slots: any[]; // materialized state at epoch
 
-  @Column({ nullable: true })
-  snapshot_hash: string;
+  @Column({ type: 'varchar', nullable: true })
+  snapshot_hash: string | null;
 
-  @Column({ nullable: true })
-  last_operation_id: string; // pointer to last op included
+  @Column({ type: 'varchar', nullable: true })
+  last_operation_id: string | null; // pointer to last op included
 
   @CreateDateColumn()
   created_at: Date;
