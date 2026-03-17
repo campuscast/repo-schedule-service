@@ -83,10 +83,10 @@ export class ScheduleService {
     return strategy.ingestOps(scheduleId, ops);
   }
 
-  async getSnapshot(scheduleId: string) {
+  async getSnapshot(scheduleId: string, afterOpId?: string) {
     const zoneId = await this.getScheduleZoneId(scheduleId);
     const strategy = await this.strategyRouter.select(zoneId);
-    return strategy.getSnapshot(scheduleId);
+    return strategy.getSnapshot(scheduleId, afterOpId);
   }
 
   async createVersion(scheduleId: string, description: string) {
@@ -190,9 +190,9 @@ export class ScheduleService {
       release_id: releaseId,
       schedule_id: scheduleId,
       zone_id: schedule.zone_id,
-      version: versionNumber,
+      version_number: versionNumber,
       slots: schedule.slots || [],
-      files: [],
+      assets: [],
     });
     const manifestHash = this.manifestBuilder.hashManifest(manifest);
 
@@ -342,15 +342,19 @@ export class ScheduleService {
 
   async getReleaseManifest(releaseId: string) {
     const release = await this.getRelease(releaseId);
+    const mj = release.manifest_json;
     return {
       release_id: release.release_id,
       schedule_id: release.schedule_id,
       zone_id: release.zone_id,
-      version: release.version_number,
-      files: release.manifest_json?.files || [],
-      slots: release.manifest_json?.slots || [],
+      version_number: release.version_number,
+      slots: mj?.slots || [],
+      // Canonical field: `assets`. Supports legacy `files` field for backward compat.
+      assets: mj?.assets || mj?.files || [],
+      manifest_hash: release.manifest_hash || '',
       signature: release.manifest_signature,
       key_id: release.manifest_key_id,
+      created_at: mj?.created_at || release.published_at?.toISOString() || '',
     };
   }
 }

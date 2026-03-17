@@ -113,7 +113,7 @@ export class LockingStrategy implements SyncStrategy {
     })) };
   }
 
-  async getSnapshot(scheduleId: string) {
+  async getSnapshot(scheduleId: string, _afterOpId?: string) {
     const schedule = await this.scheduleRepo.findOne({
       where: { schedule_id: scheduleId },
       relations: ['slots'],

@@ -18,8 +18,11 @@ export interface SyncStrategy {
   /** Ingest operations (no-op for locking, core for CRDT) */
   ingestOps(scheduleId: string, ops: any[]): Promise<IngestResult>;
 
-  /** Get current materialized state */
-  getSnapshot(scheduleId: string): Promise<any>;
+  /** Get current materialized state, optionally with delta ops after a known operation */
+  getSnapshot(scheduleId: string, afterOpId?: string): Promise<any>;
+
+  /** Get ops after a known operation_id. Returns null if op not found. */
+  getOpsAfter?(scheduleId: string, afterOperationId: string, limit?: number): Promise<any[] | null>;
 }
 
 export interface LockResult {

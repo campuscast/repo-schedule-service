@@ -57,8 +57,9 @@ export class ScheduleController {
   @Get(':scheduleId/snapshot')
   async getSnapshot(
     @Param('scheduleId') id: string,
+    @Query('after_op_id') afterOpId?: string,
   ) {
-    return this.svc.getSnapshot(id);
+    return this.svc.getSnapshot(id, afterOpId);
   }
 
   @Post(':scheduleId/version')

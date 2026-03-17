@@ -10,8 +10,9 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "lint": "eslint 'src/**/*.ts'",
-    "migrate": "typeorm migration:run -d dist/data-source.js",
-    "migrate:generate": "typeorm migration:generate -d dist/data-source.js",
+    "migrate": "typeorm-ts-node-commonjs migration:run -d ./data-source.ts",
+    "migrate:revert": "typeorm-ts-node-commonjs migration:revert -d ./data-source.ts",
+    "migrate:generate": "typeorm-ts-node-commonjs migration:generate -d ./data-source.ts",
     "test:property": "jest --testPathPattern=property",
     "test:load": "echo 'Run k6: k6 run test/load/schedule-load.js'"
   },

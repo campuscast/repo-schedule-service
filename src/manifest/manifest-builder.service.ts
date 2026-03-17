@@ -1,21 +1,32 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'crypto';
 
-export interface ManifestEntry {
+/**
+ * Canonical ManifestAsset shape — aligned with repo-contracts/json-schemas/manifest/release-manifest.schema.json.
+ * Uses `content_type`, `file_size`, and `metadata` to support desktop player and future publication editor.
+ */
+export interface ManifestAsset {
   asset_id: string;
   filename: string;
+  content_type?: string;
+  file_size?: number;
   sha256_hash: string;
   download_url: string;
-  size: number;
+  metadata?: Record<string, unknown>;
 }
 
+/**
+ * Canonical ScheduleManifest shape — uses `version_number` and `assets` (not `version`/`files`).
+ * Aligned with repo-contracts canonical schema.
+ */
 export interface ScheduleManifest {
   release_id: string;
   schedule_id: string;
   zone_id: string;
-  version: number;
-  files: ManifestEntry[];
+  version_number: number;
   slots: any[];
+  assets: ManifestAsset[];
+  manifest_hash?: string;
   signature?: string;
   key_id?: string;
   created_at: string;
@@ -33,21 +44,21 @@ export class ManifestBuilder {
     release_id: string;
     schedule_id: string;
     zone_id: string;
-    version: number;
+    version_number: number;
     slots: any[];
-    files: ManifestEntry[];
+    assets: ManifestAsset[];
   }): ScheduleManifest {
     const manifest: ScheduleManifest = {
       release_id: params.release_id,
       schedule_id: params.schedule_id,
       zone_id: params.zone_id,
-      version: params.version,
-      files: params.files,
+      version_number: params.version_number,
+      assets: params.assets,
       slots: params.slots,
       created_at: new Date().toISOString(),
     };
 
-    this.logger.log(`Manifest built: release=${params.release_id} files=${params.files.length} slots=${params.slots.length}`);
+    this.logger.log(`Manifest built: release=${params.release_id} assets=${params.assets.length} slots=${params.slots.length}`);
     return manifest;
   }
 

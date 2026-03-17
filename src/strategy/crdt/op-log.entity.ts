@@ -7,6 +7,7 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 
 @Entity('op_log')
 @Index(['schedule_id', 'lamport_ts'])
 @Index(['schedule_id', 'epoch'])
+@Index(['operation_id'], { unique: true })
 export class OpLogEntry {
   @PrimaryGeneratedColumn('uuid')
   id: string;
