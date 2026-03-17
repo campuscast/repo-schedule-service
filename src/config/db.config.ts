@@ -7,6 +7,7 @@ export default registerAs('database', () => ({
   username: process.env.DB_USERNAME || 'campuscast',
   password: process.env.DB_PASSWORD || 'campuscast',
   database: process.env.DB_DATABASE,
-  synchronize: process.env.NODE_ENV === 'development',
+  synchronize: process.env.DB_SYNCHRONIZE === 'true',
+  migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
   logging: process.env.NODE_ENV === 'development',
 }));
