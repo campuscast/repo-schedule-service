@@ -17,6 +17,7 @@ export class ScheduleService {
   private readonly signingUrl = process.env.SIGNING_KMS_URL || 'http://localhost:3008';
   private readonly validationQaUrl = process.env.VALIDATION_QA_URL || 'http://localhost:3007';
   private readonly syncServiceUrl = process.env.SYNC_SERVICE_URL || 'http://localhost:3006';
+  private readonly contentServiceUrl = process.env.CONTENT_SERVICE_URL || 'http://localhost:3004';
   private readonly deviceServiceUrl = process.env.DEVICE_SERVICE_URL || 'http://localhost:3003';
   private readonly internalServiceToken = process.env.INTERNAL_SERVICE_TOKEN || '';
 
@@ -119,6 +120,7 @@ export class ScheduleService {
           zone_id: schedule.zone_id,
           slots: schedule.slots || [],
           asset_ids: (schedule.slots || []).map((s: any) => s.asset_id).filter(Boolean),
+          publication_ids: (schedule.slots || []).map((s: any) => s.publication_id).filter(Boolean),
         }),
         signal: AbortSignal.timeout(5000),
       });
@@ -132,6 +134,65 @@ export class ScheduleService {
       valid: qaResult.passed,
       has_fatal: qaResult.issues.some((i: any) => i.severity === 'error'),
       issues: qaResult.issues,
+    };
+  }
+
+  private async resolveManifestDependencies(schedule: Schedule) {
+    const assetIds = Array.from(
+      new Set((schedule.slots || []).map((slot: any) => slot.asset_id).filter(Boolean)),
+    );
+    const publicationIds = Array.from(
+      new Set((schedule.slots || []).map((slot: any) => slot.publication_id).filter(Boolean)),
+    );
+
+    if (assetIds.length === 0 && publicationIds.length === 0) {
+      return { assets: [], publications: [] };
+    }
+
+    const resolveRes = await fetch(`${this.contentServiceUrl}/content/resolve-manifest-deps`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        zone_id: schedule.zone_id,
+        asset_ids: assetIds,
+        publication_ids: publicationIds,
+      }),
+      signal: AbortSignal.timeout(7000),
+    });
+
+    if (!resolveRes.ok) {
+      const detail = await resolveRes.text();
+      this.logger.error(`Asset resolution failed: status=${resolveRes.status} detail=${detail}`);
+      throw new BadRequestException({
+        code: 'ASSET_RESOLUTION_FAILED',
+        message: 'Failed to resolve content assets for manifest',
+      });
+    }
+
+    const payload = await resolveRes.json() as {
+      assets?: any[];
+      missing_asset_ids?: string[];
+      publications?: any[];
+      missing_publication_ids?: string[];
+    };
+
+    if (payload.missing_asset_ids && payload.missing_asset_ids.length > 0) {
+      throw new BadRequestException({
+        code: 'ASSET_DESCRIPTOR_MISSING',
+        missing_asset_ids: payload.missing_asset_ids,
+      });
+    }
+
+    if (payload.missing_publication_ids && payload.missing_publication_ids.length > 0) {
+      throw new BadRequestException({
+        code: 'PUBLICATION_DESCRIPTOR_MISSING',
+        missing_publication_ids: payload.missing_publication_ids,
+      });
+    }
+
+    return {
+      assets: payload.assets || [],
+      publications: payload.publications || [],
     };
   }
 
@@ -161,6 +222,7 @@ export class ScheduleService {
           zone_id: schedule.zone_id,
           slots: schedule.slots || [],
           asset_ids: (schedule.slots || []).map((s: any) => s.asset_id).filter(Boolean),
+          publication_ids: (schedule.slots || []).map((s: any) => s.publication_id).filter(Boolean),
         }),
         signal: AbortSignal.timeout(5000),
       });
@@ -185,14 +247,16 @@ export class ScheduleService {
       throw new BadRequestException({ code: 'QA_FAILED', issues: qaResult.issues });
     }
 
-    // 2. Build manifest
+    // 2. Build manifest with resolved content assets
+    const resolved = await this.resolveManifestDependencies(schedule);
     const manifest = this.manifestBuilder.build({
       release_id: releaseId,
       schedule_id: scheduleId,
       zone_id: schedule.zone_id,
       version_number: versionNumber,
       slots: schedule.slots || [],
-      assets: [],
+      assets: resolved.assets,
+      publications: resolved.publications,
     });
     const manifestHash = this.manifestBuilder.hashManifest(manifest);
 
@@ -351,6 +415,7 @@ export class ScheduleService {
       slots: mj?.slots || [],
       // Canonical field: `assets`. Supports legacy `files` field for backward compat.
       assets: mj?.assets || mj?.files || [],
+      publications: mj?.publications || [],
       manifest_hash: release.manifest_hash || '',
       signature: release.manifest_signature,
       key_id: release.manifest_key_id,

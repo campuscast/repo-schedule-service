@@ -38,6 +38,7 @@ export class Init1700000000000 implements MigrationInterface {
         "slot_id" uuid NOT NULL DEFAULT uuid_generate_v4(),
         "schedule_id" uuid NOT NULL,
         "asset_id" character varying,
+        "publication_id" character varying,
         "start_time" TIMESTAMP WITH TIME ZONE NOT NULL,
         "end_time" TIMESTAMP WITH TIME ZONE NOT NULL,
         "priority" integer NOT NULL DEFAULT 0,

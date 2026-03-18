@@ -14,6 +14,9 @@ export class ScheduleSlot {
   @Column({ nullable: true })
   asset_id: string;
 
+  @Column({ nullable: true })
+  publication_id: string;
+
   @Column('timestamptz')
   start_time: Date;
 
@@ -30,7 +33,7 @@ export class ScheduleSlot {
   group_id: string;
 
   @Column('jsonb', { default: '{}' })
-  metadata: Record<string, string>;
+  metadata: Record<string, unknown>;
 
   @ManyToOne(() => Schedule, s => s.slots)
   @JoinColumn({ name: 'schedule_id' })
