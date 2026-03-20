@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Schedule } from './schedule.entity';
@@ -382,13 +388,14 @@ export class ScheduleService {
   }
 
   async getLatestReleaseForDevice(deviceId: string): Promise<ScheduleRelease> {
-    const deviceRes = await fetch(`${this.deviceServiceUrl}/devices/${encodeURIComponent(deviceId)}`, {
+    const deviceRes = await fetch(`${this.deviceServiceUrl}/devices/${encodeURIComponent(deviceId)}/runtime`, {
       headers: {
         ...(this.internalServiceToken ? { 'x-internal-token': this.internalServiceToken } : {}),
       },
       signal: AbortSignal.timeout(5000),
     });
-    if (!deviceRes.ok) throw new NotFoundException('Device not found');
+    if (deviceRes.status === 404) throw new NotFoundException('Device not found');
+    if (!deviceRes.ok) throw new ServiceUnavailableException('Device runtime validation unavailable');
     const device = await deviceRes.json() as { zone_id: string; group_id: string };
 
     const releases = await this.releaseRepo.find({
