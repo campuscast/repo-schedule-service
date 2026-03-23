@@ -1,5 +1,6 @@
 import { Controller, Post, Get, Delete, Param, Body, Query } from '@nestjs/common';
 import { ScheduleService } from './schedule.service';
+import type { CalendarView } from './schedule-view.utils';
 
 @Controller('schedules')
 export class ScheduleController {
@@ -11,9 +12,19 @@ export class ScheduleController {
   }
 
   @Get()
-  async list(@Query('zone_id') zoneId: string, @Query('page') page = 1, @Query('page_size') pageSize = 20) {
-    const [data, total] = await this.svc.listByZone(zoneId, +page, +pageSize);
+  async list(
+    @Query('zone_id') zoneId: string,
+    @Query('group_id') groupId?: string,
+    @Query('page') page = 1,
+    @Query('page_size') pageSize = 20,
+  ) {
+    const [data, total] = await this.svc.listByZone(zoneId, +page, +pageSize, groupId);
     return { data, pagination: { total, page: +page, page_size: +pageSize } };
+  }
+
+  @Get('usage')
+  async getUsage(@Query('zone_id') zoneId: string) {
+    return this.svc.getScheduleUsage(zoneId);
   }
 
   @Get(':scheduleId')
@@ -44,6 +55,48 @@ export class ScheduleController {
     @Body() body: { slots: any[]; lock_token: string },
   ) {
     return this.svc.saveDraft(id, body.slots, body.lock_token);
+  }
+
+  @Get(':scheduleId/slots')
+  async getSlotsByRange(
+    @Param('scheduleId') id: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.svc.getCalendarView(id, {
+      view: 'day',
+      from,
+      to,
+    });
+  }
+
+  @Get(':scheduleId/calendar')
+  async getCalendar(
+    @Param('scheduleId') id: string,
+    @Query('view') view: string = 'month',
+    @Query('date') date?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const allowedViews: CalendarView[] = ['day', 'week', 'month', 'year'];
+    const safeView = allowedViews.includes(view as CalendarView) ? (view as CalendarView) : 'month';
+    return this.svc.getCalendarView(id, { view: safeView, date, from, to });
+  }
+
+  @Get(':scheduleId/day')
+  async getDay(
+    @Param('scheduleId') id: string,
+    @Query('date') date: string,
+  ) {
+    return this.svc.getDayView(id, date);
+  }
+
+  @Post(':scheduleId/day')
+  async saveDay(
+    @Param('scheduleId') id: string,
+    @Body() body: { date: string; slots: any[]; lock_token?: string },
+  ) {
+    return this.svc.saveDay(id, body.date, body.slots, body.lock_token);
   }
 
   @Post(':scheduleId/ops')

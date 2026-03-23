@@ -34,7 +34,31 @@ export class LockingStrategy implements SyncStrategy {
     if (result !== 'OK') {
       const existing = await this.redis.get(lockKey);
       const parsed = existing ? JSON.parse(existing) : {};
-      return { acquired: false, locked_by: parsed.userId };
+
+      // Idempotent reacquire for the same user so editor refresh does not
+      // strand an active lock token and block subsequent saves.
+      if (parsed?.userId === userId && parsed?.lockToken) {
+        const ttl = await this.redis.ttl(lockKey);
+        const ttlMs = ttl > 0 ? ttl * 1000 : ttlSeconds * 1000;
+        const expiresAt = new Date(Date.now() + ttlMs);
+        await this.scheduleRepo.update(
+          { schedule_id: scheduleId },
+          {
+            status: 'locked',
+            locked_by: userId,
+            lock_token: parsed.lockToken,
+            lock_expires_at: expiresAt,
+          },
+        );
+        return {
+          acquired: true,
+          lock_token: parsed.lockToken,
+          locked_by: userId,
+          expires_at: expiresAt,
+        };
+      }
+
+      return { acquired: false, locked_by: parsed?.userId };
     }
 
     await this.scheduleRepo.update({ schedule_id: scheduleId }, {

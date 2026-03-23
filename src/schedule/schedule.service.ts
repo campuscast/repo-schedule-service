@@ -6,7 +6,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Between, In, LessThan, LessThanOrEqual, MoreThan, MoreThanOrEqual, Repository } from 'typeorm';
 import { Schedule } from './schedule.entity';
 import { ScheduleSlot } from './schedule-slot.entity';
 import { ScheduleVersion } from '../versions/schedule-version.entity';
@@ -15,6 +15,16 @@ import { SyncStrategyRouter } from '../strategy/strategy-router.service';
 import { ManifestBuilder } from '../manifest/manifest-builder.service';
 import { AuditClient } from '@campuscast/shared-libs';
 import { randomUUID } from 'crypto';
+import {
+  buildDaySummaries,
+  computeRangeForView,
+  endExclusiveForDay,
+  formatDateOnlyUtc,
+  mergeDaySlots,
+  parseDateOnly,
+  type CalendarView,
+  type SlotLike,
+} from './schedule-view.utils';
 
 @Injectable()
 export class ScheduleService {
@@ -41,6 +51,52 @@ export class ScheduleService {
     return this.scheduleRepo.save(schedule);
   }
 
+  private normalizeQaValidationResult(payload: unknown): { valid: boolean; has_fatal: boolean; issues: any[] } {
+    const data = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+    const issues = Array.isArray(data.issues) ? data.issues : [];
+    const hasFatalFromIssues = issues.some(
+      (issue) => issue && typeof issue === 'object' && (issue as { severity?: unknown }).severity === 'error',
+    );
+    const explicitHasFatal = typeof data.has_fatal === 'boolean' ? data.has_fatal : undefined;
+    const explicitValid = typeof data.valid === 'boolean'
+      ? data.valid
+      : (typeof data.passed === 'boolean' ? data.passed : undefined);
+    const hasFatal = explicitHasFatal ?? (explicitValid === false ? true : hasFatalFromIssues);
+
+    return {
+      valid: !hasFatal,
+      has_fatal: hasFatal,
+      issues,
+    };
+  }
+
+  private async runQaValidation(scheduleId: string, schedule: Schedule) {
+    try {
+      const qaRes = await fetch(`${this.validationQaUrl}/validate/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          schedule_id: scheduleId,
+          zone_id: schedule.zone_id,
+          slots: schedule.slots || [],
+          asset_ids: (schedule.slots || []).map((s: any) => s.asset_id).filter(Boolean),
+          publication_ids: (schedule.slots || []).map((s: any) => s.publication_id).filter(Boolean),
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (!qaRes.ok) {
+        return { valid: true, has_fatal: false, issues: [] };
+      }
+
+      const payload = await qaRes.json();
+      return this.normalizeQaValidationResult(payload);
+    } catch (err) {
+      this.logger.warn(`Validation-QA unreachable: ${(err as Error).message}`);
+      return { valid: true, has_fatal: false, issues: [] };
+    }
+  }
+
   async findOne(scheduleId: string): Promise<Schedule> {
     const schedule = await this.scheduleRepo.findOne({
       where: { schedule_id: scheduleId },
@@ -50,13 +106,176 @@ export class ScheduleService {
     return schedule;
   }
 
-  async listByZone(zoneId: string, page: number, pageSize: number) {
+  async listByZone(zoneId: string, page: number, pageSize: number, groupId?: string) {
+    if (!groupId) {
+      return this.scheduleRepo.findAndCount({
+        where: { zone_id: zoneId },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        order: { created_at: 'DESC' },
+      });
+    }
+
+    const rows = await this.slotRepo
+      .createQueryBuilder('slot')
+      .select('DISTINCT slot.schedule_id', 'schedule_id')
+      .where('slot.zone_id = :zoneId', { zoneId })
+      .andWhere('slot.group_id = :groupId', { groupId })
+      .getRawMany<{ schedule_id: string }>();
+    const scheduleIds = rows.map((row) => row.schedule_id).filter(Boolean);
+    if (!scheduleIds.length) {
+      return [[], 0] as const;
+    }
+
     return this.scheduleRepo.findAndCount({
-      where: { zone_id: zoneId },
+      where: { zone_id: zoneId, schedule_id: In(scheduleIds) },
       skip: (page - 1) * pageSize,
       take: pageSize,
       order: { created_at: 'DESC' },
     });
+  }
+
+  private async getSlotsByRange(scheduleId: string, fromInclusive: Date, toExclusive: Date): Promise<ScheduleSlot[]> {
+    return this.slotRepo.find({
+      where: {
+        schedule_id: scheduleId,
+        start_time: LessThan(toExclusive),
+        end_time: MoreThan(fromInclusive),
+      },
+      order: { start_time: 'ASC', priority: 'DESC' },
+    });
+  }
+
+  async getCalendarView(scheduleId: string, params: { view: CalendarView; date?: string; from?: string; to?: string }) {
+    const schedule = await this.findOne(scheduleId);
+    let range: ReturnType<typeof computeRangeForView>;
+    try {
+      range = computeRangeForView({
+        view: params.view,
+        date: params.date,
+        from: params.from,
+        to: params.to,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid date parameters');
+    }
+    const slots = await this.getSlotsByRange(scheduleId, range.from, range.to);
+    const daySummaries = buildDaySummaries(slots as unknown as SlotLike[], range.from, range.to);
+
+    const monthSummaryMap = new Map<string, { month: string; slot_count: number; total_duration_minutes: number }>();
+    for (const summary of daySummaries) {
+      const month = summary.date.slice(0, 7);
+      const current = monthSummaryMap.get(month) || { month, slot_count: 0, total_duration_minutes: 0 };
+      current.slot_count += summary.slot_count;
+      current.total_duration_minutes += summary.total_duration_minutes;
+      monthSummaryMap.set(month, current);
+    }
+
+    return {
+      schedule_id: schedule.schedule_id,
+      schedule_name: schedule.name,
+      zone_id: schedule.zone_id,
+      view: params.view,
+      range: {
+        from: formatDateOnlyUtc(range.from),
+        to: formatDateOnlyUtc(new Date(range.to.getTime() - 1)),
+        anchor: formatDateOnlyUtc(range.anchor),
+      },
+      summaries: daySummaries,
+      months: Array.from(monthSummaryMap.values()).sort((a, b) => a.month.localeCompare(b.month)),
+      slots,
+    };
+  }
+
+  async getDayView(scheduleId: string, date: string) {
+    const schedule = await this.findOne(scheduleId);
+    let dayStart: Date;
+    try {
+      dayStart = parseDateOnly(date);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid date');
+    }
+    const dayEnd = endExclusiveForDay(dayStart);
+    const slots = await this.getSlotsByRange(scheduleId, dayStart, dayEnd);
+
+    const sorted = [...slots].sort(
+      (a, b) => a.start_time.getTime() - b.start_time.getTime() || b.priority - a.priority,
+    );
+    const summary = buildDaySummaries(sorted as unknown as SlotLike[], dayStart, dayEnd)[0];
+
+    return {
+      schedule_id: schedule.schedule_id,
+      schedule_name: schedule.name,
+      status: schedule.status,
+      zone_id: schedule.zone_id,
+      date,
+      summary,
+      slots: sorted,
+    };
+  }
+
+  async saveDay(scheduleId: string, date: string, slots: Partial<ScheduleSlot>[], lockToken?: string) {
+    const schedule = await this.findOne(scheduleId);
+    const nextDaySlots = slots.map((slot) => {
+      const start = new Date(String(slot.start_time || ''));
+      const end = new Date(String(slot.end_time || ''));
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
+        throw new BadRequestException('Invalid slot time range');
+      }
+      return {
+        slot_id: slot.slot_id || randomUUID(),
+        schedule_id: scheduleId,
+        asset_id: String(slot.asset_id || ''),
+        publication_id: String(slot.publication_id || ''),
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        priority: Number(slot.priority || 0),
+        zone_id: String(slot.zone_id || schedule.zone_id),
+        group_id: String(slot.group_id || ''),
+        metadata: slot.metadata || {},
+      } as SlotLike;
+    });
+
+    let merged: SlotLike[];
+    try {
+      merged = mergeDaySlots({
+        existingSlots: schedule.slots as unknown as SlotLike[],
+        date,
+        nextDaySlots,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid date');
+    }
+
+    const zoneId = await this.getScheduleZoneId(scheduleId);
+    const strategy = await this.strategyRouter.select(zoneId);
+    await strategy.saveSlots(scheduleId, merged, lockToken);
+    return this.getDayView(scheduleId, date);
+  }
+
+  async getScheduleUsage(zoneId: string) {
+    const slots = await this.slotRepo.find({
+      where: { zone_id: zoneId },
+      select: ['asset_id', 'publication_id'],
+    });
+
+    const assets: Record<string, number> = {};
+    const publications: Record<string, number> = {};
+
+    for (const slot of slots) {
+      if (slot.asset_id) {
+        assets[slot.asset_id] = (assets[slot.asset_id] || 0) + 1;
+      }
+      if (slot.publication_id) {
+        publications[slot.publication_id] = (publications[slot.publication_id] || 0) + 1;
+      }
+    }
+
+    return {
+      zone_id: zoneId,
+      assets,
+      publications,
+    };
   }
 
   private async getScheduleZoneId(scheduleId: string): Promise<string> {
@@ -116,31 +335,7 @@ export class ScheduleService {
 
   async validate(scheduleId: string) {
     const schedule = await this.findOne(scheduleId);
-    let qaResult: { passed: boolean; issues: any[] } = { passed: true, issues: [] };
-    try {
-      const qaRes = await fetch(`${this.validationQaUrl}/validate/schedule`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          schedule_id: scheduleId,
-          zone_id: schedule.zone_id,
-          slots: schedule.slots || [],
-          asset_ids: (schedule.slots || []).map((s: any) => s.asset_id).filter(Boolean),
-          publication_ids: (schedule.slots || []).map((s: any) => s.publication_id).filter(Boolean),
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (qaRes.ok) {
-        qaResult = await qaRes.json() as { passed: boolean; issues: any[] };
-      }
-    } catch (err) {
-      this.logger.warn(`Validation-QA unreachable: ${(err as Error).message}`);
-    }
-    return {
-      valid: qaResult.passed,
-      has_fatal: qaResult.issues.some((i: any) => i.severity === 'error'),
-      issues: qaResult.issues,
-    };
+    return this.runQaValidation(scheduleId, schedule);
   }
 
   private async resolveManifestDependencies(schedule: Schedule) {
@@ -218,28 +413,8 @@ export class ScheduleService {
     });
 
     // 1. Pre-publish QA (call validation-qa service)
-    let qaResult: { passed: boolean; issues: any[] } = { passed: true, issues: [] };
-    try {
-      const qaRes = await fetch(`${this.validationQaUrl}/validate/schedule`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          schedule_id: scheduleId,
-          zone_id: schedule.zone_id,
-          slots: schedule.slots || [],
-          asset_ids: (schedule.slots || []).map((s: any) => s.asset_id).filter(Boolean),
-          publication_ids: (schedule.slots || []).map((s: any) => s.publication_id).filter(Boolean),
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (qaRes.ok) {
-        qaResult = await qaRes.json() as { passed: boolean; issues: any[] };
-      }
-    } catch (err) {
-      this.logger.warn(`Validation-QA unreachable: ${(err as Error).message}, skipping QA gate`);
-    }
-
-    if (qaResult.passed === false) {
+    const qaResult = await this.runQaValidation(scheduleId, schedule);
+    if (qaResult.has_fatal) {
       this.auditClient.append({
         event_type: 'schedule.invariant_violation',
         actor_type: 'system',
@@ -363,7 +538,65 @@ export class ScheduleService {
     });
 
     this.logger.log(`Published: schedule=${scheduleId} release=${releaseId} version=${versionNumber}`);
-    return { release_id: releaseId, validation_passed: true, issues: qaResult.issues };
+    return { release_id: releaseId, validation_passed: true, issues: qaResult.issues, rollout_status: 'rolling_out' };
+  }
+
+  async listReleases(filters: {
+    schedule_id?: string;
+    zone_id?: string;
+    status?: string;
+    published_from?: string;
+    published_to?: string;
+    page?: number;
+    page_size?: number;
+  }) {
+    const page = Math.max(1, Number(filters.page || 1));
+    const pageSize = Math.max(1, Math.min(100, Number(filters.page_size || 20)));
+    const where: Record<string, unknown> = {};
+
+    if (filters.schedule_id) where.schedule_id = filters.schedule_id;
+    if (filters.zone_id) where.zone_id = filters.zone_id;
+    if (filters.status) where.status = filters.status;
+
+    const publishedFrom = filters.published_from ? new Date(filters.published_from) : null;
+    const publishedTo = filters.published_to
+      ? new Date(filters.published_to.includes('T') ? filters.published_to : `${filters.published_to}T23:59:59.999Z`)
+      : null;
+    if (publishedFrom && Number.isNaN(publishedFrom.getTime())) {
+      throw new BadRequestException('Invalid published_from');
+    }
+    if (publishedTo && Number.isNaN(publishedTo.getTime())) {
+      throw new BadRequestException('Invalid published_to');
+    }
+
+    if (publishedFrom && publishedTo) {
+      where.published_at = Between(publishedFrom, publishedTo);
+    } else if (publishedFrom) {
+      where.published_at = MoreThanOrEqual(publishedFrom);
+    } else if (publishedTo) {
+      where.published_at = LessThanOrEqual(publishedTo);
+    }
+
+    const [rows, total] = await this.releaseRepo.findAndCount({
+      where,
+      order: { published_at: 'DESC' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    });
+
+    const scheduleIds = Array.from(new Set(rows.map((row) => row.schedule_id).filter(Boolean)));
+    const schedules = scheduleIds.length
+      ? await this.scheduleRepo.find({
+          where: { schedule_id: In(scheduleIds) },
+          select: ['schedule_id', 'name'],
+        })
+      : [];
+    const scheduleNameMap = new Map(schedules.map((schedule) => [schedule.schedule_id, schedule.name]));
+
+    return {
+      data: rows.map((row) => this.toReleaseDto(row, scheduleNameMap.get(row.schedule_id))),
+      pagination: { total, page, page_size: pageSize },
+    };
   }
 
   /** Get a release by ID (for player/gateway) */
@@ -373,17 +606,59 @@ export class ScheduleService {
     return release;
   }
 
-  toReleaseDto(release: ScheduleRelease) {
+  async deleteRelease(releaseId: string) {
+    const release = await this.getRelease(releaseId);
+    await this.releaseRepo.delete({ release_id: releaseId });
+
+    this.auditClient.append({
+      event_type: 'schedule.release_deleted',
+      actor_type: 'system',
+      actor_id: 'schedule-service',
+      zone_id: release.zone_id,
+      resource_type: 'release',
+      resource_id: release.release_id,
+      action: 'deleted',
+      detail: {
+        schedule_id: release.schedule_id,
+        version_number: release.version_number,
+      },
+    });
+
+    return {
+      deleted: true,
+      release_id: releaseId,
+    };
+  }
+
+  getManifestSummary(release: ScheduleRelease) {
+    const manifest = release.manifest_json || {};
+    const slots = Array.isArray(manifest.slots) ? manifest.slots : [];
+    const assets = Array.isArray(manifest.assets || manifest.files) ? (manifest.assets || manifest.files) : [];
+    const publications = Array.isArray(manifest.publications) ? manifest.publications : [];
+    return {
+      slot_count: slots.length,
+      asset_count: assets.length,
+      publication_count: publications.length,
+      manifest_hash: release.manifest_hash || '',
+      has_signature: Boolean(release.manifest_signature),
+    };
+  }
+
+  toReleaseDto(release: ScheduleRelease, scheduleName?: string) {
     return {
       release_id: release.release_id,
       schedule_id: release.schedule_id,
+      schedule_name: scheduleName || '',
       version_number: release.version_number,
       zone_id: release.zone_id,
-      manifest_url: release.manifest_url,
-      manifest_signature: release.manifest_signature,
-      manifest_key_id: release.manifest_key_id,
+      target_group_ids: release.target_group_ids || [],
+      manifest_url: release.manifest_url || '',
+      manifest_signature: release.manifest_signature || '',
+      manifest_key_id: release.manifest_key_id || '',
+      manifest_present: Boolean(release.manifest_json || release.manifest_hash || release.manifest_url),
       status: release.status,
       published_at: release.published_at,
+      manifest_summary: this.getManifestSummary(release),
     };
   }
 
