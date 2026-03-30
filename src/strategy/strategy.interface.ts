@@ -12,6 +12,9 @@ export interface SyncStrategy {
   /** Release edit rights */
   releaseLock(scheduleId: string, lockToken: string): Promise<boolean>;
 
+  /** Extend active lock TTL */
+  refreshLock(scheduleId: string, lockToken: string, ttlSeconds: number): Promise<LockRefreshResult>;
+
   /** Save schedule state (direct for locking, op-based for CRDT) */
   saveSlots(scheduleId: string, slots: any[], lockToken?: string): Promise<void>;
 
@@ -27,6 +30,13 @@ export interface SyncStrategy {
 
 export interface LockResult {
   acquired: boolean;
+  lock_token?: string;
+  locked_by?: string;
+  expires_at?: Date;
+}
+
+export interface LockRefreshResult {
+  refreshed: boolean;
   lock_token?: string;
   locked_by?: string;
   expires_at?: Date;

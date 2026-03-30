@@ -41,6 +41,8 @@ describe('ScheduleService.listReleases', () => {
       slotRepo as any,
       versionRepo as any,
       releaseRepo as any,
+      makeRepo() as any,
+      makeRepo() as any,
       {} as any,
       {} as any,
     );

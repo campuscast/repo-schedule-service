@@ -32,12 +32,25 @@ export class ScheduleController {
     return this.svc.findOne(id);
   }
 
+  @Delete(':scheduleId')
+  async delete(@Param('scheduleId') id: string) {
+    return this.svc.deleteSchedule(id);
+  }
+
   @Post(':scheduleId/lock')
   async acquireLock(
     @Param('scheduleId') id: string,
     @Body() body: { user_id: string; ttl_seconds?: number },
   ) {
-    return this.svc.acquireLock(id, body.user_id, body.ttl_seconds ?? 300);
+    return this.svc.acquireLock(id, body.user_id, body.ttl_seconds ?? 600);
+  }
+
+  @Post(':scheduleId/lock/refresh')
+  async refreshLock(
+    @Param('scheduleId') id: string,
+    @Body() body: { lock_token: string; ttl_seconds?: number },
+  ) {
+    return this.svc.refreshLock(id, body.lock_token, body.ttl_seconds ?? 600);
   }
 
   @Delete(':scheduleId/lock')

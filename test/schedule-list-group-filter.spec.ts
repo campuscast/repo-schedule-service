@@ -53,6 +53,8 @@ describe('ScheduleService.listByZone group filter', () => {
       slotRepo as any,
       versionRepo as any,
       releaseRepo as any,
+      makeRepo() as any,
+      makeRepo() as any,
       {} as any,
       {} as any,
     );
@@ -88,4 +90,3 @@ describe('ScheduleService.listByZone group filter', () => {
     expect(args.take).toBe(10);
   });
 });
-

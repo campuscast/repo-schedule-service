@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThanOrEqual } from 'typeorm';
-import { SyncStrategy, LockResult, IngestResult, OpResult } from '../strategy.interface';
+import { SyncStrategy, LockResult, LockRefreshResult, IngestResult, OpResult } from '../strategy.interface';
 import { OpLogEntry } from './op-log.entity';
 import { ScheduleSnapshot } from './snapshot.entity';
 import { InvariantValidator } from '../../invariants/invariant-validator.service';
@@ -47,6 +47,13 @@ export class CRDTStrategy implements SyncStrategy {
 
   async releaseLock(): Promise<boolean> {
     return true;
+  }
+
+  async refreshLock(_scheduleId: string, _lockToken: string, _ttlSeconds: number): Promise<LockRefreshResult> {
+    return {
+      refreshed: true,
+      lock_token: 'crdt-no-lock',
+    };
   }
 
   async saveSlots(scheduleId: string, slots: any[]): Promise<void> {

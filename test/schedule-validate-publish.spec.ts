@@ -46,6 +46,8 @@ describe('ScheduleService validate/publish QA contract', () => {
       slotRepo as any,
       versionRepo as any,
       releaseRepo as any,
+      makeRepo() as any,
+      makeRepo() as any,
       {} as any,
       {
         build: jest.fn(() => ({ slots: [], assets: [], publications: [] })),

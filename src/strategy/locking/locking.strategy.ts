@@ -1,7 +1,7 @@
 import { Injectable, ConflictException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { SyncStrategy, LockResult, IngestResult } from '../strategy.interface';
+import { SyncStrategy, LockResult, LockRefreshResult, IngestResult } from '../strategy.interface';
 import { Schedule } from '../../schedule/schedule.entity';
 import { ScheduleSlot } from '../../schedule/schedule-slot.entity';
 import { InvariantValidator } from '../../invariants/invariant-validator.service';
@@ -44,7 +44,6 @@ export class LockingStrategy implements SyncStrategy {
         await this.scheduleRepo.update(
           { schedule_id: scheduleId },
           {
-            status: 'locked',
             locked_by: userId,
             lock_token: parsed.lockToken,
             lock_expires_at: expiresAt,
@@ -62,7 +61,6 @@ export class LockingStrategy implements SyncStrategy {
     }
 
     await this.scheduleRepo.update({ schedule_id: scheduleId }, {
-      status: 'locked',
       locked_by: userId,
       lock_token: lockToken,
       lock_expires_at: new Date(Date.now() + ttlSeconds * 1000),
@@ -93,7 +91,9 @@ export class LockingStrategy implements SyncStrategy {
     const result = await this.redis.eval(script, 1, lockKey, lockToken);
     if (result === 1) {
       await this.scheduleRepo.update({ schedule_id: scheduleId }, {
-        status: 'draft', locked_by: undefined, lock_token: undefined, lock_expires_at: undefined,
+        locked_by: null,
+        lock_token: null,
+        lock_expires_at: null,
       });
       this.logger.log(`Lock released: schedule=${scheduleId}`);
       return true;
@@ -101,21 +101,79 @@ export class LockingStrategy implements SyncStrategy {
     return false;
   }
 
-  async saveSlots(scheduleId: string, slots: any[], lockToken?: string): Promise<void> {
-    if (lockToken) {
-      const lockKey = `schedule:lock:${scheduleId}`;
-      const existing = await this.redis.get(lockKey);
-      if (!existing) throw new ConflictException('No active lock');
-      const parsed = JSON.parse(existing);
-      if (parsed.lockToken !== lockToken) throw new ConflictException('Lock token mismatch');
+  async refreshLock(scheduleId: string, lockToken: string, ttlSeconds: number): Promise<LockRefreshResult> {
+    const lockKey = `schedule:lock:${scheduleId}`;
+    const script = `
+      local val = redis.call("get", KEYS[1])
+      if not val then
+        return cjson.encode({ refreshed = false })
+      end
+
+      local data = cjson.decode(val)
+      if data.lockToken ~= ARGV[1] then
+        return cjson.encode({ refreshed = false, lockedBy = data.userId })
+      end
+
+      redis.call("set", KEYS[1], cjson.encode(data), "EX", tonumber(ARGV[2]))
+      return cjson.encode({
+        refreshed = true,
+        lockedBy = data.userId,
+        lockToken = data.lockToken
+      })
+    `;
+
+    const raw = await this.redis.eval(script, 1, lockKey, lockToken, String(ttlSeconds));
+    let parsed: { refreshed?: boolean; lockedBy?: string; lockToken?: string } = {};
+    if (typeof raw === 'string') {
+      try {
+        parsed = JSON.parse(raw) as { refreshed?: boolean; lockedBy?: string; lockToken?: string };
+      } catch {
+        parsed = {};
+      }
     }
+
+    if (!parsed.refreshed || !parsed.lockToken) {
+      return {
+        refreshed: false,
+        locked_by: parsed.lockedBy,
+      };
+    }
+
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+    await this.scheduleRepo.update(
+      { schedule_id: scheduleId },
+      {
+        locked_by: parsed.lockedBy || null,
+        lock_token: parsed.lockToken,
+        lock_expires_at: expiresAt,
+      },
+    );
+
+    return {
+      refreshed: true,
+      lock_token: parsed.lockToken,
+      locked_by: parsed.lockedBy,
+      expires_at: expiresAt,
+    };
+  }
+
+  async saveSlots(scheduleId: string, slots: any[], lockToken?: string): Promise<void> {
+    if (!lockToken) {
+      throw new ConflictException('Lock is required before saving');
+    }
+
+    const lockKey = `schedule:lock:${scheduleId}`;
+    const existing = await this.redis.get(lockKey);
+    if (!existing) throw new ConflictException('No active lock');
+    const parsed = JSON.parse(existing);
+    if (parsed.lockToken !== lockToken) throw new ConflictException('Lock token mismatch');
 
     // Validate invariants before persisting
     const violations = this.invariantValidator.validate(slots);
     if (violations.some(v => v.severity === 'error')) {
       throw new BadRequestException({
         code: 'INVARIANT_VIOLATION',
-        message: 'Slots violate schedule invariants',
+        message: 'Слоты пересекаются по времени в одной зоне/группе или содержат некорректные параметры',
         violations,
       });
     }
@@ -126,6 +184,11 @@ export class LockingStrategy implements SyncStrategy {
       const entity = this.slotRepo.create({ ...s, schedule_id: scheduleId });
       await this.slotRepo.save(entity);
     }
+
+    await this.scheduleRepo.update(
+      { schedule_id: scheduleId },
+      { status: 'draft' },
+    );
   }
 
   async ingestOps(_scheduleId: string, _ops: any[]): Promise<IngestResult> {

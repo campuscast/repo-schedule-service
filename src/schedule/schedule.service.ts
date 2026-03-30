@@ -11,6 +11,8 @@ import { Schedule } from './schedule.entity';
 import { ScheduleSlot } from './schedule-slot.entity';
 import { ScheduleVersion } from '../versions/schedule-version.entity';
 import { ScheduleRelease } from '../releases/schedule-release.entity';
+import { OpLogEntry } from '../strategy/crdt/op-log.entity';
+import { ScheduleSnapshot } from '../strategy/crdt/snapshot.entity';
 import { SyncStrategyRouter } from '../strategy/strategy-router.service';
 import { ManifestBuilder } from '../manifest/manifest-builder.service';
 import { AuditClient } from '@campuscast/shared-libs';
@@ -25,6 +27,8 @@ import {
   type CalendarView,
   type SlotLike,
 } from './schedule-view.utils';
+
+const DEFAULT_LOCK_TTL_SECONDS = 600;
 
 @Injectable()
 export class ScheduleService {
@@ -42,6 +46,8 @@ export class ScheduleService {
     @InjectRepository(ScheduleSlot) private readonly slotRepo: Repository<ScheduleSlot>,
     @InjectRepository(ScheduleVersion) private readonly versionRepo: Repository<ScheduleVersion>,
     @InjectRepository(ScheduleRelease) private readonly releaseRepo: Repository<ScheduleRelease>,
+    @InjectRepository(OpLogEntry) private readonly opLogRepo: Repository<OpLogEntry>,
+    @InjectRepository(ScheduleSnapshot) private readonly snapshotRepo: Repository<ScheduleSnapshot>,
     private readonly strategyRouter: SyncStrategyRouter,
     private readonly manifestBuilder: ManifestBuilder,
   ) {}
@@ -49,6 +55,80 @@ export class ScheduleService {
   async create(zoneId: string, name: string): Promise<Schedule> {
     const schedule = this.scheduleRepo.create({ zone_id: zoneId, name, status: 'draft' });
     return this.scheduleRepo.save(schedule);
+  }
+
+  private isLockActive(schedule: Pick<Schedule, 'lock_token' | 'lock_expires_at'>): boolean {
+    if (!schedule.lock_token || !schedule.lock_expires_at) return false;
+    return schedule.lock_expires_at.getTime() > Date.now();
+  }
+
+  private async normalizeScheduleLockState(schedule: Schedule): Promise<Schedule> {
+    const hasLockData = Boolean(schedule.lock_token || schedule.locked_by || schedule.lock_expires_at);
+    const lockActive = this.isLockActive(schedule);
+    const shouldClearLock = hasLockData && !lockActive;
+    const shouldNormalizeStatus = schedule.status === 'locked';
+    if (!shouldClearLock && !shouldNormalizeStatus) {
+      return schedule;
+    }
+
+    const patch: {
+      status?: string;
+      locked_by?: string | null;
+      lock_token?: string | null;
+      lock_expires_at?: Date | null;
+    } = {};
+    if (shouldClearLock) {
+      patch.locked_by = null;
+      patch.lock_token = null;
+      patch.lock_expires_at = null;
+    }
+    if (shouldNormalizeStatus) {
+      patch.status = 'draft';
+    }
+
+    await this.scheduleRepo.update({ schedule_id: schedule.schedule_id }, patch);
+    return { ...schedule, ...patch };
+  }
+
+  private toScheduleView(schedule: Schedule, lastPublishedAt?: Date | null) {
+    const isLocked = this.isLockActive(schedule);
+    const businessStatus = schedule.status === 'locked' ? 'draft' : schedule.status;
+    return {
+      ...schedule,
+      status: businessStatus,
+      is_locked: isLocked,
+      has_releases: Boolean(lastPublishedAt),
+      last_published_at: lastPublishedAt ? lastPublishedAt.toISOString() : '',
+    };
+  }
+
+  private async enrichSchedule(schedule: Schedule) {
+    const normalized = await this.normalizeScheduleLockState(schedule);
+    const lastRelease = await this.releaseRepo.findOne({
+      where: { schedule_id: normalized.schedule_id },
+      order: { published_at: 'DESC' },
+    });
+    return this.toScheduleView(normalized, lastRelease?.published_at);
+  }
+
+  private async enrichScheduleList(schedules: Schedule[]) {
+    if (!schedules.length) return [];
+
+    const normalized = await Promise.all(schedules.map((schedule) => this.normalizeScheduleLockState(schedule)));
+    const scheduleIds = normalized.map((schedule) => schedule.schedule_id);
+    const releases = await this.releaseRepo.find({
+      where: { schedule_id: In(scheduleIds) },
+      select: ['schedule_id', 'published_at'],
+      order: { published_at: 'DESC' },
+    });
+    const latestByScheduleId = new Map<string, Date>();
+    for (const release of Array.isArray(releases) ? releases : []) {
+      if (!latestByScheduleId.has(release.schedule_id)) {
+        latestByScheduleId.set(release.schedule_id, release.published_at);
+      }
+    }
+
+    return normalized.map((schedule) => this.toScheduleView(schedule, latestByScheduleId.get(schedule.schedule_id)));
   }
 
   private normalizeQaValidationResult(payload: unknown): { valid: boolean; has_fatal: boolean; issues: any[] } {
@@ -103,17 +183,18 @@ export class ScheduleService {
       relations: ['slots'],
     });
     if (!schedule) throw new NotFoundException('Schedule not found');
-    return schedule;
+    return this.enrichSchedule(schedule);
   }
 
   async listByZone(zoneId: string, page: number, pageSize: number, groupId?: string) {
     if (!groupId) {
-      return this.scheduleRepo.findAndCount({
+      const [rows, total] = await this.scheduleRepo.findAndCount({
         where: { zone_id: zoneId },
         skip: (page - 1) * pageSize,
         take: pageSize,
         order: { created_at: 'DESC' },
       });
+      return [await this.enrichScheduleList(rows), total] as const;
     }
 
     const rows = await this.slotRepo
@@ -127,12 +208,13 @@ export class ScheduleService {
       return [[], 0] as const;
     }
 
-    return this.scheduleRepo.findAndCount({
+    const [rowsByGroup, totalByGroup] = await this.scheduleRepo.findAndCount({
       where: { zone_id: zoneId, schedule_id: In(scheduleIds) },
       skip: (page - 1) * pageSize,
       take: pageSize,
       order: { created_at: 'DESC' },
     });
+    return [await this.enrichScheduleList(rowsByGroup), totalByGroup] as const;
   }
 
   private async getSlotsByRange(scheduleId: string, fromInclusive: Date, toExclusive: Date): Promise<ScheduleSlot[]> {
@@ -250,6 +332,7 @@ export class ScheduleService {
     const zoneId = await this.getScheduleZoneId(scheduleId);
     const strategy = await this.strategyRouter.select(zoneId);
     await strategy.saveSlots(scheduleId, merged, lockToken);
+    await this.scheduleRepo.update({ schedule_id: scheduleId }, { status: 'draft' });
     return this.getDayView(scheduleId, date);
   }
 
@@ -278,6 +361,44 @@ export class ScheduleService {
     };
   }
 
+  async deleteSchedule(scheduleId: string) {
+    const schedule = await this.scheduleRepo.findOne({ where: { schedule_id: scheduleId } });
+    if (!schedule) throw new NotFoundException('Schedule not found');
+
+    if (schedule.lock_token) {
+      try {
+        const strategy = await this.strategyRouter.select(schedule.zone_id);
+        await strategy.releaseLock(scheduleId, schedule.lock_token);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to release lock before deleting schedule=${scheduleId}: ${(error as Error).message}`,
+        );
+      }
+    }
+
+    await this.scheduleRepo.manager.transaction(async (manager) => {
+      await manager.delete(ScheduleRelease, { schedule_id: scheduleId });
+      await manager.delete(ScheduleVersion, { schedule_id: scheduleId });
+      await manager.delete(OpLogEntry, { schedule_id: scheduleId });
+      await manager.delete(ScheduleSnapshot, { schedule_id: scheduleId });
+      await manager.delete(ScheduleSlot, { schedule_id: scheduleId });
+      await manager.delete(Schedule, { schedule_id: scheduleId });
+    });
+
+    this.auditClient.append({
+      event_type: 'schedule.deleted',
+      actor_type: 'system',
+      actor_id: 'schedule-service',
+      zone_id: schedule.zone_id,
+      resource_type: 'schedule',
+      resource_id: scheduleId,
+      action: 'deleted',
+      detail: { name: schedule.name },
+    });
+
+    return { deleted: true, schedule_id: scheduleId };
+  }
+
   private async getScheduleZoneId(scheduleId: string): Promise<string> {
     const schedule = await this.scheduleRepo.findOne({ where: { schedule_id: scheduleId } });
     if (!schedule) throw new NotFoundException('Schedule not found');
@@ -287,7 +408,7 @@ export class ScheduleService {
   async acquireLock(scheduleId: string, userId: string, ttlSeconds: number) {
     const zoneId = await this.getScheduleZoneId(scheduleId);
     const strategy = await this.strategyRouter.select(zoneId);
-    return strategy.acquireLock(scheduleId, userId, ttlSeconds);
+    return strategy.acquireLock(scheduleId, userId, ttlSeconds || DEFAULT_LOCK_TTL_SECONDS);
   }
 
   async releaseLock(scheduleId: string, lockToken: string) {
@@ -296,10 +417,17 @@ export class ScheduleService {
     return strategy.releaseLock(scheduleId, lockToken);
   }
 
+  async refreshLock(scheduleId: string, lockToken: string, ttlSeconds: number) {
+    const zoneId = await this.getScheduleZoneId(scheduleId);
+    const strategy = await this.strategyRouter.select(zoneId);
+    return strategy.refreshLock(scheduleId, lockToken, ttlSeconds || DEFAULT_LOCK_TTL_SECONDS);
+  }
+
   async saveDraft(scheduleId: string, slots: any[], lockToken: string) {
     const zoneId = await this.getScheduleZoneId(scheduleId);
     const strategy = await this.strategyRouter.select(zoneId);
     await strategy.saveSlots(scheduleId, slots, lockToken);
+    await this.scheduleRepo.update({ schedule_id: scheduleId }, { status: 'draft' });
     return this.findOne(scheduleId);
   }
 
@@ -536,6 +664,11 @@ export class ScheduleService {
         target_group_ids: targetGroupIds,
       },
     });
+
+    await this.scheduleRepo.update(
+      { schedule_id: scheduleId },
+      { status: 'published' },
+    );
 
     this.logger.log(`Published: schedule=${scheduleId} release=${releaseId} version=${versionNumber}`);
     return { release_id: releaseId, validation_passed: true, issues: qaResult.issues, rollout_status: 'rolling_out' };

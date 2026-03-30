@@ -19,14 +19,14 @@ export class Schedule {
   @Column({ default: 0 })
   current_version: number;
 
-  @Column({ nullable: true })
-  locked_by: string;
+  @Column({ type: 'varchar', nullable: true })
+  locked_by: string | null;
 
-  @Column({ nullable: true })
-  lock_token: string;
+  @Column({ type: 'varchar', nullable: true })
+  lock_token: string | null;
 
   @Column({ nullable: true, type: 'timestamptz' })
-  lock_expires_at: Date;
+  lock_expires_at: Date | null;
 
   @OneToMany(() => ScheduleSlot, s => s.schedule)
   slots: ScheduleSlot[];
