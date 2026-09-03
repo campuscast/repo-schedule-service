@@ -9,13 +9,18 @@ COPY repo-schedule-service/package*.json ./
 RUN npm ci && npm install --no-save /workspace/shared-libs.tgz && test ! -L node_modules/@campuscast/shared-libs
 COPY repo-schedule-service/. ./
 RUN npm run build
+RUN npm prune --omit=dev \
+    && npm install --omit=dev --no-save /workspace/shared-libs.tgz \
+    && test ! -L node_modules/@campuscast/shared-libs
 
 FROM node:22-alpine
 WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3005
 RUN addgroup -g 1001 appgroup && adduser -u 1001 -G appgroup -s /bin/sh -D appuser
 COPY --from=builder /workspace/repo-schedule-service/dist ./dist
 COPY --from=builder /workspace/repo-schedule-service/node_modules ./node_modules
 COPY --from=builder /workspace/repo-schedule-service/package.json ./
 USER appuser
-EXPOSE 3000
+EXPOSE 3005
 CMD ["node", "dist/main.js"]

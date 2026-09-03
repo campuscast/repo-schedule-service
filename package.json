@@ -2,6 +2,9 @@
   "name": "@campuscast/schedule-service",
   "version": "0.1.0",
   "description": "Schedule Service — CRUD, versioning, locking/CRDT strategy, publish",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
@@ -9,12 +12,12 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
+    "test:unit": "jest --runInBand --testPathIgnorePatterns=/property/",
     "lint": "eslint 'src/**/*.ts'",
     "migrate": "typeorm-ts-node-commonjs migration:run -d ./data-source.ts",
     "migrate:revert": "typeorm-ts-node-commonjs migration:revert -d ./data-source.ts",
     "migrate:generate": "typeorm-ts-node-commonjs migration:generate -d ./data-source.ts",
-    "test:property": "jest --testPathPattern=property",
-    "test:load": "echo 'Run k6: k6 run test/load/schedule-load.js'"
+    "test:property": "jest --runInBand --testPathPattern=property"
   },
   "dependencies": {
     "@campuscast/shared-libs": "file:../repo-shared-libs",
@@ -35,6 +38,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
     "@types/express": "^4.17.0",
     "typescript": "^5.5.0",
     "jest": "^29.7.0",
@@ -58,7 +62,7 @@
     ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.ts$": "ts-jest"
     },
     "collectCoverageFrom": [
       "src/**/*.(t|j)s",
